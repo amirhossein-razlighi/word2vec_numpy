@@ -8,7 +8,7 @@ Usage
     python main.py
 
     # Full training on all 17 M tokens
-    python main.py --max_tokens 0 --epochs 5
+    python main.py --max_tokens 0 --n_epochs 5
 
     # Custom corpus
     python main.py --corpus path/to/mytext.txt

@@ -41,10 +41,10 @@ def download_text8(dest_dir: str = "data") -> str:
 
     if not os.path.exists(text_path):
         if not os.path.exists(zip_path):
-            print(f"Downloading text8 corpus (~30 MB) from {TEXT8_URL} …")
+            print(f"Downloading text8 corpus (~30 MB) from {TEXT8_URL} ...")
             urllib.request.urlretrieve(TEXT8_URL, zip_path)
             print("Download complete.")
-        print("Unzipping …")
+        print("Unzipping ...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(dest_dir)
         print(f"text8 saved to {text_path}")
@@ -288,7 +288,7 @@ def prepare_data(
     print(f"  After sub-sampling : {len(token_ids):,} tokens (t={subsample_t})")
 
     # --- Negative-sampling table ------------------------------------------
-    print(f"  Building negative-sampling table (size={neg_table_size:,}) …")
+    print(f"  Building negative-sampling table (size={neg_table_size:,}) ...")
     neg_table = build_negative_table(vocab, table_size=neg_table_size)
 
     return token_ids, vocab, neg_table

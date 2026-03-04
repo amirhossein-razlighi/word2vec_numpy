@@ -224,7 +224,7 @@ def save_vectors(path: str, model: Word2Vec, vocab: Vocabulary) -> None:
     """
     Save word vectors in word2vec text format:
         <vocab_size> <dim>
-        <word> <v_0> <v_1> … <v_{D-1}>
+        <word> <v_0> <v_1> ... <v_{D-1}>
     """
     V, D = model.vectors.shape
     with open(path, "w", encoding="utf-8") as f:
