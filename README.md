@@ -30,6 +30,11 @@ You can also specify a custom corpus by providing the path to your text file:
 python main.py --corpus path/to/mytext.txt
 ```
 
+The training will save the vectors in a __vectors.txt__ file (txt because it can be loaded also by gensim), which can be loaded later for evaluation without retraining:
+```bash
+python main.py --no_train
+```
+
 ## Evaluation
 After training, the script will evaluate the learned embeddings on a set of analogy tasks (e.g. "king is to man as queen is to ?"). The results will be printed in the console, showing the predicted word and its cosine similarity score.
 The evaluation methods is these two:
