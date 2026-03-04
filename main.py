@@ -21,7 +21,7 @@ import numpy as np
 
 from data    import prepare_data
 from model   import Word2Vec
-from train   import train, save_vectors, plot_training
+from train   import train, save_vectors, plot_training, load_vectors
 from evaluate import EmbeddingSpace, print_nearest, print_analogies
 
 
@@ -39,6 +39,7 @@ DEFAULTS = dict(
     vectors_out = "vectors.txt",  # path for saving trained vectors
     log_every   = 100_000,        # report every N training pairs
     plots_dir   = ".",            # directory for saving training-curve plots
+    is_training = True,           # whether to run training (vs. just evaluation)
 )
 
 
@@ -46,56 +47,61 @@ def main(cfg: argparse.Namespace) -> None:
     rng = np.random.default_rng(cfg.seed)
     max_tok = cfg.max_tokens if cfg.max_tokens > 0 else None
 
-    # ── 1. Data preparation ───────────────────────────────────────────────
-    token_ids, vocab, neg_table = prepare_data(
-        corpus_path    = cfg.corpus,
-        max_tokens     = max_tok,
-        min_count      = cfg.min_count,
-        subsample_t    = cfg.subsample_t,
-        neg_table_size = 10_000_000,
-        seed           = cfg.seed,
-    )
+    if not cfg.is_training:
+        print(f"Loading saved vectors from {cfg.vectors_out}...")
+        vectors, idx2word = load_vectors(cfg.vectors_out)
+        space = EmbeddingSpace(vectors, idx2word)
+    else:
+      # ── 1. Data preparation ───────────────────────────────────────────────
+      token_ids, vocab, neg_table = prepare_data(
+          corpus_path    = cfg.corpus,
+          max_tokens     = max_tok,
+          min_count      = cfg.min_count,
+          subsample_t    = cfg.subsample_t,
+          neg_table_size = 10_000_000,
+          seed           = cfg.seed,
+      )
 
-    # ── 2. Model initialisation ───────────────────────────────────────────
-    model = Word2Vec(
-        vocab_size = len(vocab),
-        embed_dim  = cfg.embed_dim,
-        seed       = cfg.seed,
-    )
+      # ── 2. Model initialisation ───────────────────────────────────────────
+      model = Word2Vec(
+          vocab_size = len(vocab),
+          embed_dim  = cfg.embed_dim,
+          seed       = cfg.seed,
+      )
 
-    # ── 3. Training ───────────────────────────────────────────────────────
-    loss_history, lr_history = train(
-        model,
-        token_ids,
-        vocab,
-        neg_table,
-        n_epochs    = cfg.n_epochs,
-        window      = cfg.window,
-        n_negatives = cfg.n_negatives,
-        lr_0        = cfg.lr_0,
-        log_every   = cfg.log_every,
-        seed        = cfg.seed,
-    )
+      # ── 3. Training ───────────────────────────────────────────────────────
+      loss_history, lr_history = train(
+          model,
+          token_ids,
+          vocab,
+          neg_table,
+          n_epochs    = cfg.n_epochs,
+          window      = cfg.window,
+          n_negatives = cfg.n_negatives,
+          lr_0        = cfg.lr_0,
+          log_every   = cfg.log_every,
+          seed        = cfg.seed,
+      )
 
-    # ── 4. Save embeddings ────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(cfg.vectors_out) or ".", exist_ok=True)
-    save_vectors(cfg.vectors_out, model, vocab)
+      # ── 4. Save embeddings ────────────────────────────────────────────────
+      os.makedirs(os.path.dirname(cfg.vectors_out) or ".", exist_ok=True)
+      save_vectors(cfg.vectors_out, model, vocab)
 
-    # ── 5. Plot training curves (requires matplotlib — skips if absent) ───
-    out_png = os.path.join(cfg.plots_dir, "training_curves.png")
-    plot_training(
-        loss_history,
-        lr_history,
-        log_every = cfg.log_every,
-        out_path  = out_png,
-    )
+      # ── 5. Plot training curves (requires matplotlib — skips if absent) ───
+      out_png = os.path.join(cfg.plots_dir, "training_curves.png")
+      plot_training(
+          loss_history,
+          lr_history,
+          log_every = cfg.log_every,
+          out_path  = out_png,
+      )
 
-    # ── 5. Intrinsic evaluation ───────────────────────────────────────────
-    space = EmbeddingSpace(model.vectors, vocab.idx2word)
+      # ── 5. Intrinsic evaluation ───────────────────────────────────────────
+      space = EmbeddingSpace(model.vectors, vocab.idx2word)
 
     # ---- Nearest neighbours ----
     probe_words = ["king", "paris", "computer", "music", "dog", "war"]
-    print_nearest(space, probe_words, topn=8)
+    print_nearest(space, probe_words, top_k=8)
 
     # ---- Analogies (a : a* :: b : ?) ----
     analogies = [
@@ -113,7 +119,7 @@ def main(cfg: argparse.Namespace) -> None:
     print_analogies(space, analogies)
 
     # ---- Final loss summary ----
-    if loss_history:
+    if cfg.is_training and loss_history:
         print(f"Loss trajectory (first -> last checkpoint): "
               f"{loss_history[0]:.4f} -> {loss_history[-1]:.4f}")
 
@@ -137,6 +143,8 @@ if __name__ == "__main__":
     p.add_argument("--log_every",   type=int,   default=DEFAULTS["log_every"])
     p.add_argument("--plots_dir",   type=str,   default=DEFAULTS["plots_dir"],
                    help="Directory to save training-curve plots (requires matplotlib).")
+    p.add_argument("--no_train",    action="store_false", dest="is_training",
+                   help="Skip training and just evaluate on the saved vectors.")
 
     args = p.parse_args()
     main(args)
