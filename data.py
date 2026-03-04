@@ -271,7 +271,7 @@ def prepare_data(
     if corpus_path is None:
         corpus_path = download_text8()
 
-    print(f"Loading corpus from {corpus_path} …")
+    print(f"Loading corpus from {corpus_path}...")
     tokens = load_text8(corpus_path, max_tokens=max_tokens)
     print(f"  Raw tokens : {len(tokens):,}")
 
