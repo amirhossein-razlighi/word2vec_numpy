@@ -99,7 +99,8 @@ def train(
     total_pairs = approx_pairs_per_epoch * n_epochs
 
     step         = 0       # global training-pair counter
-    loss_history = []
+    loss_history: List[float] = []
+    lr_history:   List[float] = []  # LR value recorded at the same checkpoints
 
     print(f"\n{'='*60}")
     print(f"  Training Word2Vec (Skip-gram + NEG)")
@@ -138,6 +139,7 @@ def train(
             if step % log_every == 0:
                 avg = running_loss / log_every
                 loss_history.append(avg)
+                lr_history.append(lr)   # snapshot LR at this checkpoint
                 elapsed = time.time() - t0
                 kpairs_per_sec = log_every / (elapsed + 1e-9) / 1000
                 print(
@@ -154,7 +156,68 @@ def train(
         print(f"\n  ── Epoch {epoch} done | avg_loss {epoch_avg:.4f} "
               f"| pairs {epoch_pairs:,}\n")
 
-    return loss_history
+    return loss_history, lr_history
+
+
+def plot_training(
+    loss_history: List[float],
+    lr_history:   List[float],
+    *,
+    log_every: int  = 100_000,
+    out_path:  str  = "training_curves.png",
+) -> None:
+    """
+    Save a two-panel figure showing the loss curve and the LR schedule.
+    """
+
+    try:
+        import matplotlib  # noqa: PLC0415
+        matplotlib.use("Agg")   # non-interactive backend — safe on headless servers
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(
+            "[plot_training] matplotlib not installed — skipping plots.\n"
+            "  Install with: pip install matplotlib"
+        )
+        return
+
+    if not loss_history:
+        print("[plot_training] No loss data to plot — skipping.")
+        return
+
+    # x values: actual number of training pairs at each checkpoint
+    steps = [i * log_every for i in range(1, len(loss_history) + 1)]
+
+    fig, (ax_loss, ax_lr) = plt.subplots(
+        2, 1,
+        figsize=(10, 6),
+        sharex=True,          # both panels share the step axis
+        tight_layout=True,
+    )
+
+    # ── Panel 1: loss ────────────────────────────────────────────────────
+    ax_loss.plot(steps, loss_history, linewidth=1.2, color="steelblue",
+                 label="avg NEG loss per checkpoint")
+    ax_loss.set_ylabel("Average loss  -L_NEG")
+    ax_loss.set_title("Skip-gram Negative Sampling — Training Curves")
+    ax_loss.legend(loc="upper right", fontsize=8)
+    ax_loss.grid(True, linestyle="--", linewidth=0.4, alpha=0.7)
+
+    # ── Panel 2: learning rate ────────────────────────────────────────────
+    if lr_history:
+        ax_lr.plot(steps[: len(lr_history)], lr_history,
+                   linewidth=1.2, color="coral",
+                   label="learning rate lr(t)")
+    ax_lr.set_ylabel("Learning rate")
+    ax_lr.set_xlabel("Training pairs processed")
+    ax_lr.legend(loc="upper right", fontsize=8)
+    ax_lr.grid(True, linestyle="--", linewidth=0.4, alpha=0.7)
+
+    import os as _os
+    _os.makedirs(_os.path.dirname(_os.path.abspath(out_path)), exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Training curves saved to {out_path}")
 
 
 def save_vectors(path: str, model: Word2Vec, vocab: Vocabulary) -> None:
