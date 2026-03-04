@@ -40,7 +40,7 @@ from typing import List, Tuple
 import numpy as np
 
 from model import Word2Vec
-from data import Vocabulary, generate_pairs
+from data import Vocabulary
 
 
 def linear_decay_lr(
@@ -50,9 +50,13 @@ def linear_decay_lr(
     min_lr_ratio:   float = 1e-4,
 ) -> float:
     """
-    Linearly decay lr from lr_0 → lr_0 x min_lr_ratio over total_steps.
+    Linearly decay lr from lr_0 to lr_0 * min_lr_ratio over total_steps.
 
-    lr(t) = lr_0 x max(1 - t/T,  min_lr_ratio)
+    lr(t) = lr_0 * max(1 - t/T,  min_lr_ratio)
+
+    'step' and 'total_steps' are both counted in *tokens*, not pairs.
+    One token generates up to 2*window pairs; using tokens keeps the
+    schedule independent of the actual (stochastic) number of pairs.
     """
     fraction = max(1.0 - step / total_steps, min_lr_ratio)
     return lr_0 * fraction
@@ -70,9 +74,16 @@ def train(
     lr_0:        float = 0.025,
     log_every:   int   = 100_000,
     seed:        int   = 42,
-) -> List[float]:
+) -> Tuple[List[float], List[float]]:
     """
-    Train the Word2Vec model in-place and return per-log-step average losses.
+    Train the Word2Vec model in-place.
+
+    Progress and the LR schedule are both tracked in *tokens* (one per
+    outer-loop iteration), NOT in pairs.  Each token spawns up to 2*window
+    (center, context) pairs depending on the randomly sampled window size,
+    so counting pairs would give a number 6-10x larger than the corpus size
+    — confusing when reading progress logs.  Token-based counting means
+    "100 k tokens processed" always refers to 100 k positions in the corpus.
 
     Parameters
     ----------
@@ -84,77 +95,111 @@ def train(
     window      : maximum context-window radius
     n_negatives : K — number of negative samples per positive pair
     lr_0        : initial learning rate (0.025 is the C word2vec default)
-    log_every   : print a progress line every this many training pairs
+    log_every   : report every this many *tokens*
     seed        : RNG seed
 
     Returns
     -------
-    loss_history : list of average losses recorded at each log checkpoint
+    loss_history : average SGNS loss at each log checkpoint
+    lr_history   : learning rate at each log checkpoint
     """
     rng = np.random.default_rng(seed)
+    T   = len(token_ids)
 
-    # Estimate total number of training pairs for the LR schedule.
-    # Each token generates at most 2×window context pairs on average
-    approx_pairs_per_epoch = len(token_ids) * 2 * window
-    total_pairs = approx_pairs_per_epoch * n_epochs
+    # LR schedule denominator: total *token* steps across all epochs.
+    # Using tokens (not pairs) makes the schedule corpus-size-independent.
+    total_token_steps = T * n_epochs
 
-    step         = 0       # global training-pair counter
+    # global_token_step counts tokens seen across ALL epochs (LR input)
+    global_token_step = 0
+
     loss_history: List[float] = []
-    lr_history:   List[float] = []  # LR value recorded at the same checkpoints
+    lr_history:   List[float] = []
 
     print(f"\n{'='*60}")
     print(f"  Training Word2Vec (Skip-gram + NEG)")
-    print(f"  corpus tokens : {len(token_ids):,}")
+    print(f"  corpus tokens : {T:,}")
     print(f"  vocab size    : {len(vocab):,}")
     print(f"  embed dim     : {model.embed_dim}")
     print(f"  epochs        : {n_epochs}")
     print(f"  window        : {window}")
     print(f"  negatives (K) : {n_negatives}")
     print(f"  lr_0          : {lr_0}")
+    print(f"  log_every     : every {log_every:,} tokens")
     print(f"{'='*60}\n")
 
+    table_size = len(neg_table)
+
     for epoch in range(1, n_epochs + 1):
-        epoch_loss   = 0.0
-        epoch_pairs  = 0
-        running_loss = 0.0
+        epoch_loss_sum  = 0.0
+        epoch_pair_cnt  = 0
+        window_loss_sum = 0.0
+        window_pair_cnt = 0
+        token_in_epoch  = 0      # token counter that resets each epoch
         t0 = time.time()
 
-        pair_gen = generate_pairs(
-            token_ids, window, neg_table, n_negatives, rng
-        )
+        for i, center in enumerate(token_ids):
+            # ── LR is based on tokens seen globally, not pairs ────────
+            lr = linear_decay_lr(lr_0, global_token_step, total_token_steps)
 
-        for center, context, neg_indices in pair_gen:
-            # ── learning-rate decay ───────────────────────────────────
-            lr = linear_decay_lr(lr_0, step, total_pairs)
+            # ── dynamic window: sample radius w in {1 ... window} ──────
+            # Nearer words are observed proportionally more often.
+            w  = int(rng.integers(1, window + 1))
+            lo = max(0, i - w)
+            hi = min(T, i + w + 1)
 
-            # ── forward + backward + SGD update ──────────────────────
-            loss = model.train_pair(center, context, neg_indices, lr)
+            for j in range(lo, hi):
+                if j == i:
+                    continue
 
-            running_loss += loss
-            epoch_loss   += loss
-            epoch_pairs  += 1
-            step         += 1
+                context = token_ids[j]
 
-            # ── periodic progress report ──────────────────────────────
-            if step % log_every == 0:
-                avg = running_loss / log_every
-                loss_history.append(avg)
-                lr_history.append(lr)   # snapshot LR at this checkpoint
+                # Draw K negatives from the smoothed unigram table
+                neg_pos     = rng.integers(0, table_size, size=n_negatives)
+                neg_indices = neg_table[neg_pos]
+
+                # ── forward + backward + SGD update ──────────────────
+                loss = model.train_pair(center, context, neg_indices, lr)
+
+                window_loss_sum += loss
+                window_pair_cnt += 1
+
+            # ── advance token counters ────────────────────────────────
+            global_token_step += 1
+            token_in_epoch    += 1
+
+            # ── periodic progress report (every log_every tokens) ─────
+            if token_in_epoch % log_every == 0:
+                avg     = window_loss_sum / max(window_pair_cnt, 1)
                 elapsed = time.time() - t0
-                kpairs_per_sec = log_every / (elapsed + 1e-9) / 1000
+                kpairs_per_s = window_pair_cnt / (elapsed + 1e-9) / 1_000
+
+                loss_history.append(avg)
+                lr_history.append(lr)
                 print(
                     f"  epoch {epoch}/{n_epochs}  "
-                    f"step {step:>10,}  "
+                    f"token {token_in_epoch:>10,}/{T:,}  "
                     f"lr {lr:.6f}  "
                     f"avg_loss {avg:.4f}  "
-                    f"{kpairs_per_sec:.1f} k pairs/s"
+                    f"{kpairs_per_s:.1f} k pairs/s"
                 )
-                running_loss = 0.0
-                t0 = time.time()
 
-        epoch_avg = epoch_loss / max(epoch_pairs, 1)
+                epoch_loss_sum  += window_loss_sum
+                epoch_pair_cnt  += window_pair_cnt
+                window_loss_sum  = 0.0
+                window_pair_cnt  = 0
+                t0               = time.time()
+
+        # flush remainder that didn't land on a log_every boundary
+        if window_pair_cnt > 0:
+            epoch_loss_sum += window_loss_sum
+            epoch_pair_cnt += window_pair_cnt
+            loss_history.append(window_loss_sum / window_pair_cnt)
+            lr_history.append(lr)
+
+        epoch_avg = epoch_loss_sum / max(epoch_pair_cnt, 1)
         print(f"\n  ── Epoch {epoch} done | avg_loss {epoch_avg:.4f} "
-              f"| pairs {epoch_pairs:,}\n")
+              f"| tokens {T:,} | pairs {epoch_pair_cnt:,}\n")
 
     return loss_history, lr_history
 
@@ -209,7 +254,7 @@ def plot_training(
                    linewidth=1.2, color="coral",
                    label="learning rate lr(t)")
     ax_lr.set_ylabel("Learning rate")
-    ax_lr.set_xlabel("Training pairs processed")
+    ax_lr.set_xlabel("Tokens processed")
     ax_lr.legend(loc="upper right", fontsize=8)
     ax_lr.grid(True, linestyle="--", linewidth=0.4, alpha=0.7)
 
